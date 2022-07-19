@@ -330,6 +330,8 @@ type Client interface {
 	GetClusterStatusInfo(clusterName, namespace string, workloadClusterClient Client) ClusterStatusInfo
 	// GetCLIPluginImageRepositoryOverride returns map of image repository override
 	GetCLIPluginImageRepositoryOverride() (map[string]string, error)
+	// Remove kapp-controller labels from clusterclass resources
+	RemoveKappControllerLabelsFromClusterClassResources(clusterName, namespace string) error
 }
 
 // PollOptions is options for polling
@@ -2407,6 +2409,55 @@ func (c *client) IsClusterClassBased(clusterName, namespace string) (bool, error
 	}
 
 	return true, nil
+}
+
+func (c *client) CheckCRDPresence(resourceName, group string) (bool, error) {
+	// Since we're looking up API types via discovery, we don't need the dynamic client.
+	clusterQueryClient, err := capdiscovery.NewClusterQueryClient(c.dynamicClient, c.discoveryClient)
+	if err != nil {
+		return false, err
+	}
+
+	var queryObject = capdiscovery.Group(resourceName, group).WithResource(resourceName)
+
+	// Build query client.
+	cqc := clusterQueryClient.Query(queryObject)
+
+	// Execute returns combined result of all queries.
+	return cqc.Execute() // return (found, err) response
+
+}
+
+// RemoveKappControllerLabelsFromClusterClassResources removes kapp-controller labels from clusterclass resources
+func (c *client) RemoveKappControllerLabelsFromClusterClassResources(clusterName, namespace string) error {
+	var errList []error
+
+	ClusterClassResources := []crtclient.ObjectList{
+		&capi.ClusterClassList{},
+		&controlplanev1.KubeadmControlPlaneTemplateList{},
+		&bootstrapv1.KubeadmConfigTemplateList{},
+		&capav1beta1.AWSClusterTemplateList{},
+		&capav1beta1.AWSMachineTemplateList{},
+		&capzv1beta1.AzureClusterTemplateList{},
+		&capzv1beta1.AzureMachineTemplateList{},
+		&capvv1beta1.VSphereClusterTemplateList{},
+		&capvv1beta1.VSphereMachineTemplateList{},
+	}
+
+	for _, resource := range ClusterClassResources {
+		if exists, err := c.CheckCRDPresence(resource.GetObjectKind().GroupVersionKind().Kind, resource.GetObjectKind().GroupVersionKind().Group); err != nil || !exists {
+			continue
+		}
+
+		err := c.ListResources(resource, &crtclient.ListOptions{Namespace: constants.TkgNamespace})
+		if err != nil {
+			errList = append(errList, err)
+			continue
+		}
+
+	}
+
+	return nil
 }
 
 // Options provides way to customize creation of clusterClient
